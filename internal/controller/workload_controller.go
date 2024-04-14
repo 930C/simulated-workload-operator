@@ -48,6 +48,8 @@ type WorkloadReconciler struct {
 //+kubebuilder:rbac:groups=simulation.c930.net,resources=workloads,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=simulation.c930.net,resources=workloads/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=simulation.c930.net,resources=workloads/finalizers,verbs=update
+//+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -64,6 +66,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Fetch the Workload instance
 	workload := &simulationv1alpha1.Workload{}
 	err := r.Get(ctx, req.NamespacedName, workload)
+	log.Info("Starting a new Reconciliation", "Workload", workload.Name)
 
 	if err != nil {
 		if apierrors.IsNotFound(err) {
@@ -102,6 +105,11 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if ok := controllerutil.AddFinalizer(workload, workloadFinalizer); !ok {
 			log.Error(err, "Failed to add finalizer into the custom resource")
 			return ctrl.Result{Requeue: true}, nil
+		}
+
+		if err = r.Get(ctx, req.NamespacedName, workload); err != nil {
+			log.Error(err, "Failed to re-fetch Workload")
+			return ctrl.Result{}, err
 		}
 
 		if err = r.Update(ctx, workload); err != nil {
@@ -231,5 +239,6 @@ func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("workload-controller")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&simulationv1alpha1.Workload{}).
+		Owns(&v1.ConfigMap{}).
 		Complete(r)
 }
