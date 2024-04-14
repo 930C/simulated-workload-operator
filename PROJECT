@@ -7,4 +7,14 @@ layout:
 - go.kubebuilder.io/v4
 projectName: simulated-workload-operator
 repo: github.com/930C/simulated-workload-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: c930.net
+  group: simulation
+  kind: Workload
+  path: github.com/930C/simulated-workload-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

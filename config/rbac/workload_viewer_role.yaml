@@ -1,0 +1,27 @@
+# permissions for end users to view workloads.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: clusterrole
+    app.kubernetes.io/instance: workload-viewer-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: simulated-workload-operator
+    app.kubernetes.io/part-of: simulated-workload-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: workload-viewer-role
+rules:
+- apiGroups:
+  - simulation.c930.net
+  resources:
+  - workloads
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - simulation.c930.net
+  resources:
+  - workloads/status
+  verbs:
+  - get
