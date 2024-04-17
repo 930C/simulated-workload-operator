@@ -39,18 +39,50 @@ spec:
           spec:
             description: WorkloadSpec defines the desired state of Workload
             properties:
-              foo:
-                description: Foo is an example field of Workload. Edit workload_types.go
-                  to remove/update
+              dependentResources:
+                description: List of dependent resources this controller should manage
+                items:
+                  properties:
+                    quantity:
+                      description: Quantity of the resources to create
+                      type: integer
+                    resourceType:
+                      description: Type of the Kubernetes resource (e.g., Pod, ConfigMap)
+                      type: string
+                    template:
+                      description: Template of the resource if applicable (e.g., for
+                        creating specific types of Pods or ConfigMaps)
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                  required:
+                  - quantity
+                  - resourceType
+                  type: object
+                type: array
+              duration:
+                description: Duration for the simulation or sleep (in seconds)
+                type: integer
+              intensity:
+                description: |-
+                  Intensity of the workload for CPU or Memory or IO
+                  This could be percentage for CPU, size in MB for Memory, and IO speed in MB/s
+                type: integer
+              parameters:
+                additionalProperties:
+                  type: string
+                description: Additional parameters might be needed depending on the
+                  simulation type
+                type: object
+              simulationType:
+                description: 'Type of simulation to perform: CPU, Memory, IO, Sleep'
                 type: string
             type: object
           status:
             description: WorkloadStatus defines the observed state of Workload
             properties:
               conditions:
-                description: |-
-                  INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-                  Important: Run "make" to regenerate code after modifying this file
+                description: Conditions represent the latest available observations
+                  of an object's state
                 items:
                   description: "Condition contains details for one aspect of the current
                     state of this API Resource.\n---\nThis struct is intended for
@@ -119,6 +151,13 @@ spec:
                   - type
                   type: object
                 type: array
+              message:
+                description: Detailed message about the current status of the workload
+                  simulation
+                type: string
+              phase:
+                description: Reflects the current state of the simulation
+                type: string
             type: object
         type: object
     served: true

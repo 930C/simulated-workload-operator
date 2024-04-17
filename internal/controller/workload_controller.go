@@ -25,13 +25,18 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	runtime2 "runtime"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"strconv"
 	"time"
 )
 
@@ -89,15 +94,16 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, nil
 	}
 
-	requeue, err := r.handleConfigMapCreation(ctx, workload)
-	if err != nil {
-		return ctrl.Result{}, err
-	} else if requeue {
-		return ctrl.Result{RequeueAfter: time.Minute}, nil
-	}
+	//err = r.ReconcileDependencies(ctx, workload)
+	//if err != nil {
+	//	logger.Error(err, "Failed to reconcile dependencies")
+	//	return ctrl.Result{}, err
+	//}
 
-	err = r.handleConfigMapDrift(ctx, workload)
+	// Run in-operator simulations
+	err = r.RunWorkload(ctx, workload)
 	if err != nil {
+		logger.Error(err, "Failed to run simulation")
 		return ctrl.Result{}, err
 	}
 
@@ -127,6 +133,70 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *WorkloadReconciler) RunWorkload(ctx context.Context, workload *simulationv1alpha1.Workload) error {
+	// Depending on the Workloadtype, run the workload
+	fmt.Println(workload.Spec.SimulationType + " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	switch workload.Spec.SimulationType {
+	case "CPU":
+		runCPUWorkload(workload.Spec.Duration)
+	case "Memory":
+		runMemoryLoad(workload.Spec.Duration, workload.Spec.Intensity)
+	case "IO":
+		// Run IO simulation
+		// INSERT CODE HERE
+	case "Sleep":
+		// Run Sleep simulation
+		// INSERT CODE HERE
+	default:
+		return errors.New(fmt.Sprintf("Invalid simulation type: %s", workload.Spec.SimulationType))
+	}
+
+	return nil
+}
+
+func runCPUWorkload(duration int) {
+	// Run any CPU workload
+	done := make(chan int)
+
+	for i := 0; i < runtime2.NumCPU(); i++ {
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+			}
+		}()
+	}
+
+	time.Sleep(time.Duration(duration) * time.Second)
+	close(done)
+}
+
+func runMemoryLoad(duration int, megabytes int) {
+	type MemoryLoad struct {
+		Block []byte
+	}
+
+	numBlocks := megabytes   // Adjust this value depending on how much memory you want to consume.
+	blockSize := 1024 * 1024 // Each block is 1 megabyte.
+
+	var blocks []MemoryLoad = make([]MemoryLoad, numBlocks)
+
+	for i := 0; i < numBlocks; i++ {
+		blocks[i] = MemoryLoad{make([]byte, blockSize)}
+
+		if i%100 == 0 {
+			fmt.Printf("Allocated %v MB\n", (i+1)*blockSize/(1024*1024))
+		}
+	}
+
+	fmt.Println("Holding memory for ", duration, " seconds...")
+	time.Sleep(time.Second * time.Duration(duration))
+	fmt.Println("Memory sleep finished")
 }
 
 func (r *WorkloadReconciler) getWorkloadInstance(ctx context.Context, req ctrl.Request) (*simulationv1alpha1.Workload, error) {
@@ -346,4 +416,82 @@ func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&simulationv1alpha1.Workload{}).
 		Owns(&v1.ConfigMap{}).
 		Complete(r)
+}
+
+func (r *WorkloadReconciler) ReconcileDependencies(ctx context.Context, workload *simulationv1alpha1.Workload) error {
+	logger := log.FromContext(ctx)
+	for i, dependentResource := range workload.Spec.DependentResources {
+		// Create or update the dependent resource
+		err := r.createOrUpdateDependentResource(ctx, workload, dependentResource, i)
+		if err != nil {
+			logger.Error(err, "Failed to create or update dependent resource", "resourceType", dependentResource.ResourceType)
+			// Set an error condition in the status
+			meta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
+				Type:    "Error",
+				Status:  metav1.ConditionTrue,
+				Reason:  "Reconciling",
+				Message: fmt.Sprintf("Failed to create or update dependent resource (%s)", dependentResource.ResourceType),
+			})
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *WorkloadReconciler) createOrUpdateDependentResource(ctx context.Context, workload *simulationv1alpha1.Workload, spec simulationv1alpha1.DependentResourceSpec, iterator int) error {
+
+	if spec.ResourceType == "Deployment" {
+		// Get the GroupVersionKind of the resource
+		gkv := schema.GroupVersionKind{
+			Group:   "apps",
+			Version: "v1",
+			Kind:    "Deployment",
+		}
+
+		// Create an empty unstructured object
+		obj := &unstructured.Unstructured{}
+		obj.SetGroupVersionKind(gkv)
+
+		// Set the namespace and name of the resource
+		obj.SetNamespace(workload.Namespace)
+		obj.SetName(spec.ResourceType + "-" + workload.Name + "-" + strconv.Itoa(iterator))
+
+		// Get the existing resource, if it exists
+		err := r.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, obj)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("failed to get existing resource: %w", err)
+		}
+
+		// If the resource doesn't exist, create it
+		if apierrors.IsNotFound(err) {
+			err = controllerutil.SetControllerReference(workload, obj, r.Scheme)
+			if err != nil {
+				return fmt.Errorf("failed to set controller reference: %w", err)
+			}
+
+			err = r.Create(ctx, obj)
+			if err != nil {
+				return fmt.Errorf("failed to create resource: %w", err)
+			}
+
+			r.Recorder.Eventf(workload, v1.EventTypeNormal, "ResourceCreated", "Created %s %s", spec.ResourceType, obj.GetName())
+			return nil
+		}
+
+		// If the resource already exists, update it
+		err = controllerutil.SetControllerReference(workload, obj, r.Scheme)
+		if err != nil {
+			return fmt.Errorf("failed to set controller reference: %w", err)
+		}
+
+		err = r.Update(ctx, obj)
+		if err != nil {
+			return fmt.Errorf("failed to update resource: %w", err)
+		}
+
+		r.Recorder.Eventf(workload, v1.EventTypeNormal, "ResourceUpdated", "Updated %s %s", spec.ResourceType, obj.GetName())
+		return nil
+	}
+
+	return nil
 }
