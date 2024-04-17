@@ -5,6 +5,8 @@
 domain: c930.net
 layout:
 - go.kubebuilder.io/v4
+plugins:
+  grafana.kubebuilder.io/v1-alpha: {}
 projectName: simulated-workload-operator
 repo: github.com/930C/simulated-workload-operator
 resources:
