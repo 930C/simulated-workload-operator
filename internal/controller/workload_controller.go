@@ -18,25 +18,28 @@ package controller
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	simulationv1alpha1 "github.com/930C/simulated-workload-operator/api/v1alpha1"
-	v1 "k8s.io/api/core/v1"
+	"github.com/go-logr/logr"
+	"io"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
+	rand2 "math/rand"
+	"os"
 	runtime2 "runtime"
+	"strings"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"strconv"
 	"time"
 )
 
@@ -91,14 +94,9 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err != nil {
 		return ctrl.Result{}, err
 	} else if deleted {
+		logger.Info("Workload instance deleted")
 		return ctrl.Result{}, nil
 	}
-
-	//err = r.ReconcileDependencies(ctx, workload)
-	//if err != nil {
-	//	logger.Error(err, "Failed to reconcile dependencies")
-	//	return ctrl.Result{}, err
-	//}
 
 	// Run in-operator simulations
 	err = r.RunWorkload(ctx, workload)
@@ -110,8 +108,6 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Get the latest state of the Workload Custom Resource
 	if err = r.Get(ctx, req.NamespacedName, workload); err != nil {
 		if apierrors.IsNotFound(err) {
-			// The Workload resource might have been deleted after reconcile request.
-			// Return and don't requeue.
 			logger.Info("Workload resource not found. Ignoring since object must be deleted.")
 			return ctrl.Result{}, nil
 		}
@@ -119,16 +115,31 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	// Mark the workload as processed before updating its status.
+	if workload.Annotations == nil {
+		workload.Annotations = make(map[string]string)
+	}
+	workload.Annotations["processed"] = "true"
+
+	// Update the Workload to save the annotations
+	if err = r.Update(ctx, workload); err != nil {
+		logger.Error(err, "Failed to update workload with annotation")
+		return ctrl.Result{}, err
+	}
+
 	// The following implementation will update the status
+	// of the Workload Custom Resource to indicate that the
+	// reconciliation is successful.
+	logger.Info("Updating final Workload status")
 	meta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
 		Type:    "Available",
 		Status:  metav1.ConditionTrue,
 		Reason:  "Reconciling",
-		Message: fmt.Sprintf("ConfigMap for custom resource (%s) created successfully", workload.Name),
+		Message: fmt.Sprintf("The workload has been successfully processed."),
 	})
 
 	if err = r.Status().Update(ctx, workload); err != nil {
-		logger.Error(err, "Failed to update Workload status")
+		logger.Error(err, "Failed to update last Workload status")
 		return ctrl.Result{}, err
 	}
 
@@ -136,23 +147,37 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 func (r *WorkloadReconciler) RunWorkload(ctx context.Context, workload *simulationv1alpha1.Workload) error {
-	// Depending on the Workloadtype, run the workload
-	fmt.Println(workload.Spec.SimulationType + " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-	switch workload.Spec.SimulationType {
-	case "CPU":
-		runCPUWorkload(workload.Spec.Duration)
-	case "Memory":
-		runMemoryLoad(workload.Spec.Duration, workload.Spec.Intensity)
-	case "IO":
-		// Run IO simulation
-		// INSERT CODE HERE
-	case "Sleep":
-		// Run Sleep simulation
-		// INSERT CODE HERE
-	default:
-		return errors.New(fmt.Sprintf("Invalid simulation type: %s", workload.Spec.SimulationType))
+	logger := log.FromContext(ctx)
+
+	// Check if the workload has already been processed and if there have been no spec changes.
+	if val, ok := workload.Annotations["processed"]; ok && val == "true" {
+		logger.Info("SKIPPING processing as workload is marked processed and no spec change")
+		return nil
 	}
 
+	// Depending on the Workloadtype, run the workload
+	logger.Info("Running workload", "Workload.Spec.SimulationType", workload.Spec.SimulationType)
+
+	switch strings.ToLower(workload.Spec.SimulationType) {
+	case "cpu":
+		runCPUWorkload(workload.Spec.Duration)
+	case "memory":
+		runMemoryLoad(workload.Spec.Duration, workload.Spec.Intensity)
+	case "io":
+		if err := simulateIO(ctx, workload.Spec.Duration, workload.Spec.Intensity); err != nil {
+			logger.Error(err, "Failed to simulate I/O workload")
+			return err
+		}
+	case "sleep":
+		sleepDuration := time.Duration(workload.Spec.Duration) * time.Second
+		logger.Info("Sleeping for", "Duration", sleepDuration)
+		time.Sleep(sleepDuration)
+	default:
+		logger.Info("No workload simulation required", "Workload.Spec.SimulationType", workload.Spec.SimulationType)
+		return nil
+	}
+
+	logger.Info("Workload simulation completed", "Workload.Spec.SimulationType", workload.Spec.SimulationType)
 	return nil
 }
 
@@ -184,7 +209,7 @@ func runMemoryLoad(duration int, megabytes int) {
 	numBlocks := megabytes   // Adjust this value depending on how much memory you want to consume.
 	blockSize := 1024 * 1024 // Each block is 1 megabyte.
 
-	var blocks []MemoryLoad = make([]MemoryLoad, numBlocks)
+	var blocks = make([]MemoryLoad, numBlocks)
 
 	for i := 0; i < numBlocks; i++ {
 		blocks[i] = MemoryLoad{make([]byte, blockSize)}
@@ -197,6 +222,109 @@ func runMemoryLoad(duration int, megabytes int) {
 	fmt.Println("Holding memory for ", duration, " seconds...")
 	time.Sleep(time.Second * time.Duration(duration))
 	fmt.Println("Memory sleep finished")
+	runtime2.GC()
+}
+
+// simulateIO simulates file I/O operations by writing and reading back random data from a temporary file.
+// `duration` specifies how long the I/O operations should run, and `sizeMB` specifies the size of the data to write (in each operation in megabytes)
+func simulateIO(ctx context.Context, duration int, sizeMB int) error {
+	logger := log.FromContext(ctx)
+	logger.Info("Starting I/O simulation", "Duration", duration, "SizeMB", sizeMB)
+
+	// Define the duration for the simulation
+	endTime := time.Now().Add(time.Duration(duration) * time.Second)
+	randomSource := rand2.New(rand2.NewSource(time.Now().UnixNano()))
+
+	for time.Now().Before(endTime) {
+		fileSize := randomSource.Intn(sizeMB) + 1 // Ensure non-zero file size
+		data := make([]byte, fileSize*1024*1024)
+		_, err := rand.Read(data)
+		if err != nil {
+			logger.Error(err, "Failed to generate random data")
+			return err
+		}
+
+		// Simulate mixed read/write and random access by creating multiple files
+		for i := 0; i < 5; i++ { // Create multiple files to simulate handling multiple resources
+			fileName := fmt.Sprintf("simulate-io-%d", i)
+			err := performFileOperations(ctx, fileName, data)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	runtime2.GC()
+
+	logger.Info("Complex I/O simulation completed")
+	return nil
+}
+
+// performFileOperations handles the actual file writing and reading, simulating random access and mixed operations.
+func performFileOperations(ctx context.Context, fileName string, data []byte) error {
+	logger := log.FromContext(ctx)
+	// Create a temporary file
+	tmpfile, err := os.CreateTemp("", fileName)
+	if err != nil {
+		logger.Error(err, "Failed to create temporary file")
+		return err
+	}
+	defer func(name string) {
+		err := os.Remove(name)
+		if err != nil {
+			logger.Error(err, "Failed to remove temporary file")
+		}
+	}(tmpfile.Name()) // Clean up
+
+	// Randomly choose to write or read first to simulate mixed operations
+	if rand2.Int()%2 == 0 {
+		if err := writeAndReadFile(tmpfile, data, logger); err != nil {
+			return err
+		}
+	} else {
+		if err := readFileAndWrite(tmpfile, data, logger); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func writeAndReadFile(file *os.File, data []byte, logger logr.Logger) error {
+	defer file.Close()
+
+	if _, err := file.Write(data); err != nil {
+		logger.Error(err, "Failed to write to file")
+		return err
+	}
+
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		logger.Error(err, "Failed to seek in file")
+		return err
+	}
+
+	if _, err := io.ReadAll(file); err != nil {
+		logger.Error(err, "Failed to read from file")
+		return err
+	}
+
+	return nil
+}
+
+func readFileAndWrite(file *os.File, data []byte, logger logr.Logger) error {
+	defer file.Close()
+
+	if _, err := io.ReadAll(file); err != nil {
+		logger.Error(err, "Failed to read from file")
+		return err
+	}
+
+	if _, err := file.Write(data); err != nil {
+		logger.Error(err, "Failed to write to file")
+		return err
+	}
+
+	return nil
 }
 
 func (r *WorkloadReconciler) getWorkloadInstance(ctx context.Context, req ctrl.Request) (*simulationv1alpha1.Workload, error) {
@@ -205,12 +333,12 @@ func (r *WorkloadReconciler) getWorkloadInstance(ctx context.Context, req ctrl.R
 	err := r.Get(ctx, req.NamespacedName, workload)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			logger.Info("simulation resource not found. It must have been deleted")
+			logger.Info("Workload resource not found. Ignoring since object must be deleted")
 			return nil, nil // Return empty result when the resource is not found to avoid requeue
 		}
 
 		logger.Error(err, "failed to get workload")
-		return nil, err // Return error when the resource is not found to requeue and try again
+		return nil, err // Return error if another error occurs and requeue
 	}
 
 	return workload, nil
@@ -219,8 +347,9 @@ func (r *WorkloadReconciler) getWorkloadInstance(ctx context.Context, req ctrl.R
 func (r *WorkloadReconciler) handleInitialStatus(ctx context.Context, workload *simulationv1alpha1.Workload) error {
 	logger := log.FromContext(ctx)
 	if workload.Status.Conditions == nil || len(workload.Status.Conditions) == 0 {
+		logger.Info("Setting initial status for Workload")
 		meta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{Type: "Available", Status: metav1.ConditionUnknown, Reason: "Reconciling", Message: "Starting reconciliation"})
-		if err := r.Status().Update(ctx, workload); err != nil {
+		if err := r.updateWithRetry(ctx, workload); err != nil {
 			logger.Error(err, "Failed to update Workload status")
 			return err // Return error when the resource is not found to requeue and try again
 		}
@@ -244,18 +373,30 @@ func (r *WorkloadReconciler) handleInitialStatus(ctx context.Context, workload *
 func (r *WorkloadReconciler) handleFinalizer(ctx context.Context, workload *simulationv1alpha1.Workload) error {
 	logger := log.FromContext(ctx)
 
-	if err := r.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name}, workload); err != nil {
+	// First, check if the finalizer is already present to avoid unnecessary updates
+	if controllerutil.ContainsFinalizer(workload, workloadFinalizer) {
+		return nil
+	}
+
+	logger.Info("Adding Finalizer for Workload")
+
+	// Get the latest state of the Workload Custom Resource
+	if err := r.Get(ctx, types.NamespacedName{
+		Namespace: workload.Namespace,
+		Name:      workload.Name,
+	}, workload); err != nil {
+		logger.Error(err, "Failed to get Workload (In finalizer)")
 		return err
 	}
 
-	if !controllerutil.ContainsFinalizer(workload, workloadFinalizer) {
-		logger.Info("Adding Finalizer for Workload")
+	controllerutil.AddFinalizer(workload, workloadFinalizer)
 
-		controllerutil.AddFinalizer(workload, workloadFinalizer)
-
-		return r.Update(ctx, workload)
+	if err := r.updateWithRetry(ctx, workload); err != nil {
+		logger.Error(err, "Failed to add finalizer for Workload")
+		return err
 	}
 
+	logger.Info("Finalizer added for Workload")
 	return nil
 }
 
@@ -264,6 +405,7 @@ func (r *WorkloadReconciler) handleWorkloadDeletion(ctx context.Context, workloa
 
 	isWorkloadMarkedToBeDeleted := workload.GetDeletionTimestamp() != nil
 	if isWorkloadMarkedToBeDeleted {
+		logger.Info("Workload is marked to be deleted")
 		if controllerutil.ContainsFinalizer(workload, workloadFinalizer) {
 			logger.Info("Performing Finalizer Operations for Workload before the deletion of the CR")
 
@@ -275,7 +417,11 @@ func (r *WorkloadReconciler) handleWorkloadDeletion(ctx context.Context, workloa
 				Message: fmt.Sprintf("Performing finalizer operations for the custom resource: %s ", workload.Name),
 			})
 
-			if err := r.Status().Update(ctx, workload); err != nil {
+			if err := r.updateStatusWithRetry(ctx, workload); err != nil {
+				if apierrors.IsNotFound(err) {
+					logger.Info("Workload resource not found. Ignoring since object must be deleted")
+					return true, nil // Return empty result when the resource is not found to avoid requeue
+				}
 				logger.Error(err, "Failed to update Workload status")
 				return false, err
 			}
@@ -286,7 +432,7 @@ func (r *WorkloadReconciler) handleWorkloadDeletion(ctx context.Context, workloa
 				Namespace: workload.Namespace,
 				Name:      workload.Name,
 			}, workload); err != nil {
-				logger.Error(err, "failed to re-fetch workload")
+				logger.Error(err, "failed to re-fetch")
 				return false, err
 			}
 
@@ -297,8 +443,14 @@ func (r *WorkloadReconciler) handleWorkloadDeletion(ctx context.Context, workloa
 				Message: fmt.Sprintf("Finalizer operations for custom resource %s name were successfully accomplished", workload.Name),
 			})
 
-			if err := r.Status().Update(ctx, workload); err != nil {
-				logger.Error(err, "Failed to update Workload status")
+			if err := r.updateStatusWithRetry(ctx, workload); err != nil {
+				if apierrors.IsNotFound(err) {
+					logger.Info("Workload resource not found. Ignoring since object must be deleted")
+					return true, nil // Return empty result when the resource is not found to avoid requeue
+				}
+
+				errString := fmt.Sprintf("Failed to update status for Workload: %s using retry", workload.Name)
+				logger.Error(err, errString)
 				return false, err
 			}
 
@@ -314,99 +466,11 @@ func (r *WorkloadReconciler) handleWorkloadDeletion(ctx context.Context, workloa
 				return false, err
 			}
 
+			logger.Info("Finalizer removed for Workload")
 			return true, nil
 		}
 	}
 	return false, nil
-}
-
-func (r *WorkloadReconciler) handleConfigMapCreation(ctx context.Context, workload *simulationv1alpha1.Workload) (bool, error) {
-	logger := log.FromContext(ctx)
-	configMap := &v1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{Name: workload.Name, Namespace: workload.Namespace}, configMap)
-	if err != nil && apierrors.IsNotFound(err) {
-		// Define a new ConfigMap
-		cm := r.createDesiredConfigMap(workload)
-
-		if err = ctrl.SetControllerReference(workload, cm, r.Scheme); err != nil {
-			logger.Error(err, "failed to set controller reference for the new ConfigMap for Workload CR")
-
-			meta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
-				Type:    "Available",
-				Status:  metav1.ConditionFalse,
-				Reason:  "Reconciling",
-				Message: fmt.Sprintf("Failed to create Deployment for the custom resource (%s): (%s)", workload.Name, err),
-			})
-
-			if err := r.Status().Update(ctx, workload); err != nil {
-				logger.Error(err, "Failed to update Workload status")
-				return false, err
-			}
-
-			return false, err
-		}
-
-		logger.Info("Creating a new ConfigMap", "ConfigMap.Namespace", cm.Namespace, "ConfigMap.Name", cm.Name)
-		if err = r.Create(ctx, cm); err != nil {
-			logger.Error(err, "Failed to create new Deployment",
-				"Deployment.Namespace", cm.Namespace,
-				"Deployment.Name", cm.Name)
-			return false, err
-		}
-
-		// ConfigMap created successfully
-		// We will requeue the reconciliation so that we can ensure the state and move forward for the next operations
-		return true, nil
-	} else if err != nil {
-		logger.Error(err, "Failed to get ConfigMap")
-		return false, err
-	} else {
-		logger.Info("ConfigMap already exists", "ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
-	}
-
-	return false, nil
-}
-
-func (r *WorkloadReconciler) handleConfigMapDrift(ctx context.Context, workload *simulationv1alpha1.Workload) error {
-	logger := log.FromContext(ctx)
-	configMap := &v1.ConfigMap{}
-	err := r.Get(ctx, types.NamespacedName{
-		Namespace: workload.Namespace,
-		Name:      workload.Name,
-	}, configMap)
-	if err != nil {
-		logger.Error(err, "Failed to get ConfigMap")
-		return err
-	}
-
-	// Check if the ConfigMap is up-to-date
-	desiredConfigMap := r.createDesiredConfigMap(workload)
-	if configMap.Data["key1"] != desiredConfigMap.Data["key1"] {
-		logger.Info("ConfigMap is not up-to-date. Updating it now")
-
-		// Update the ConfigMap
-		configMap.Data["key1"] = desiredConfigMap.Data["key1"]
-		if err = r.Update(ctx, configMap); err != nil {
-			logger.Error(err, "Failed to update ConfigMap")
-			return err
-		}
-
-		logger.Info("ConfigMap updated successfully")
-	}
-
-	return nil
-}
-
-func (r *WorkloadReconciler) createDesiredConfigMap(workload *simulationv1alpha1.Workload) *v1.ConfigMap {
-	return &v1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      workload.Name,
-			Namespace: workload.Namespace,
-		},
-		Data: map[string]string{
-			"key1": "value1",
-		},
-	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -414,84 +478,47 @@ func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("workload-controller")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&simulationv1alpha1.Workload{}).
-		Owns(&v1.ConfigMap{}).
 		Complete(r)
 }
 
-func (r *WorkloadReconciler) ReconcileDependencies(ctx context.Context, workload *simulationv1alpha1.Workload) error {
-	logger := log.FromContext(ctx)
-	for i, dependentResource := range workload.Spec.DependentResources {
-		// Create or update the dependent resource
-		err := r.createOrUpdateDependentResource(ctx, workload, dependentResource, i)
-		if err != nil {
-			logger.Error(err, "Failed to create or update dependent resource", "resourceType", dependentResource.ResourceType)
-			// Set an error condition in the status
-			meta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
-				Type:    "Error",
-				Status:  metav1.ConditionTrue,
-				Reason:  "Reconciling",
-				Message: fmt.Sprintf("Failed to create or update dependent resource (%s)", dependentResource.ResourceType),
-			})
-			return err
+func (r *WorkloadReconciler) updateWithRetry(ctx context.Context, workload *simulationv1alpha1.Workload) error {
+	return wait.ExponentialBackoff(wait.Backoff{
+		Duration: 100 * time.Millisecond, // initial delay
+		Factor:   2.0,                    // multiplier for subsequent delays
+		Jitter:   0.1,                    // random variation in delay calculation
+		Steps:    5,                      // max number of attempts
+	}, func() (bool, error) {
+		if err := r.Update(ctx, workload); err != nil {
+			if apierrors.IsConflict(err) {
+				// Conflict detected, refresh the object and try again
+				if err := r.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name}, workload); err != nil {
+					return false, err // return error and stop retrying if fetch fails
+				}
+				return false, nil // fetch successful, retry the update
+			}
+			return false, err // some other error, stop retrying
 		}
-	}
-	return nil
+		return true, nil // success, stop retrying
+	})
 }
 
-func (r *WorkloadReconciler) createOrUpdateDependentResource(ctx context.Context, workload *simulationv1alpha1.Workload, spec simulationv1alpha1.DependentResourceSpec, iterator int) error {
-
-	if spec.ResourceType == "Deployment" {
-		// Get the GroupVersionKind of the resource
-		gkv := schema.GroupVersionKind{
-			Group:   "apps",
-			Version: "v1",
-			Kind:    "Deployment",
-		}
-
-		// Create an empty unstructured object
-		obj := &unstructured.Unstructured{}
-		obj.SetGroupVersionKind(gkv)
-
-		// Set the namespace and name of the resource
-		obj.SetNamespace(workload.Namespace)
-		obj.SetName(spec.ResourceType + "-" + workload.Name + "-" + strconv.Itoa(iterator))
-
-		// Get the existing resource, if it exists
-		err := r.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, obj)
-		if err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("failed to get existing resource: %w", err)
-		}
-
-		// If the resource doesn't exist, create it
-		if apierrors.IsNotFound(err) {
-			err = controllerutil.SetControllerReference(workload, obj, r.Scheme)
-			if err != nil {
-				return fmt.Errorf("failed to set controller reference: %w", err)
+func (r *WorkloadReconciler) updateStatusWithRetry(ctx context.Context, workload *simulationv1alpha1.Workload) error {
+	return wait.ExponentialBackoff(wait.Backoff{
+		Duration: 100 * time.Millisecond, // initial delay
+		Factor:   2.0,                    // multiplier for subsequent delays
+		Jitter:   0.1,                    // random variation in delay calculation
+		Steps:    5,                      // max number of attempts
+	}, func() (bool, error) {
+		if err := r.Status().Update(ctx, workload); err != nil {
+			if apierrors.IsConflict(err) {
+				// Conflict detected, refresh the object and try again
+				if err := r.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name}, workload); err != nil {
+					return false, err // return error and stop retrying if fetch fails
+				}
+				return false, nil // fetch successful, retry the update
 			}
-
-			err = r.Create(ctx, obj)
-			if err != nil {
-				return fmt.Errorf("failed to create resource: %w", err)
-			}
-
-			r.Recorder.Eventf(workload, v1.EventTypeNormal, "ResourceCreated", "Created %s %s", spec.ResourceType, obj.GetName())
-			return nil
+			return false, err // some other error, stop retrying
 		}
-
-		// If the resource already exists, update it
-		err = controllerutil.SetControllerReference(workload, obj, r.Scheme)
-		if err != nil {
-			return fmt.Errorf("failed to set controller reference: %w", err)
-		}
-
-		err = r.Update(ctx, obj)
-		if err != nil {
-			return fmt.Errorf("failed to update resource: %w", err)
-		}
-
-		r.Recorder.Eventf(workload, v1.EventTypeNormal, "ResourceUpdated", "Updated %s %s", spec.ResourceType, obj.GetName())
-		return nil
-	}
-
-	return nil
+		return true, nil // success, stop retrying
+	})
 }

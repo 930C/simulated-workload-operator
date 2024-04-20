@@ -6,12 +6,12 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: workload-sample
 spec:
-  simulationType: Memory
+  simulationType: CPU
   duration: 5
   intensity: 10
-  dependentResources:
-    - resourceType: "Deployment"
-      quantity: 1
+#  dependentResources:
+#    - resourceType: "Deployment"
+#      quantity: 1
 #      template:
 #        apiVersion: v1
 #        kind: Pod
@@ -24,5 +24,3 @@ spec:
 #              command: [ "echo", "Simulating Memory Load" ]
 #    - resourceType: "ConfigMap"
 #      quantity: 2
-#      template:
-#        apiVersion
