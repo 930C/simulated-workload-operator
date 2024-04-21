@@ -151,12 +151,22 @@ spec:
                   - type
                   type: object
                 type: array
+              endTime:
+                description: EndTime is the timestamp representing the server time
+                  when this Workload ended being reconciled by the operator
+                format: date-time
+                type: string
               message:
                 description: Detailed message about the current status of the workload
                   simulation
                 type: string
               phase:
                 description: Reflects the current state of the simulation
+                type: string
+              startTime:
+                description: StartTime is the timestamp representing the server time
+                  when this Workload started being reconciled by the operator
+                format: date-time
                 type: string
             type: object
         type: object

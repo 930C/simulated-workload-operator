@@ -68,6 +68,9 @@ type WorkloadReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.2/pkg/reconcile
 func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	// Store the current server time as the reconciliation start timestamp
+	reconcileStartTime := metav1.NewTime(time.Now())
+
 	logger := log.FromContext(ctx)
 
 	// Fetch the Workload instance
@@ -137,6 +140,11 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		Reason:  "Reconciling",
 		Message: fmt.Sprintf("The workload has been successfully processed."),
 	})
+
+	workload.Status.StartTime = reconcileStartTime
+	// Store the current server time as the reconciliation end timestamp
+	reconcileEndTime := metav1.NewTime(time.Now())
+	workload.Status.EndTime = reconcileEndTime
 
 	if err = r.Status().Update(ctx, workload); err != nil {
 		logger.Error(err, "Failed to update last Workload status")
