@@ -69,7 +69,8 @@ type WorkloadReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.2/pkg/reconcile
 func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Store the current server time as the reconciliation start timestamp
-	reconcileStartTime := metav1.NewTime(time.Now())
+	const nanoSecondsLayout = "2006-01-02T15:04:05.999999999Z07:00"
+	reconcileStartTime := time.Now().Format(nanoSecondsLayout)
 
 	logger := log.FromContext(ctx)
 
@@ -143,7 +144,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	workload.Status.StartTime = reconcileStartTime
 	// Store the current server time as the reconciliation end timestamp
-	reconcileEndTime := metav1.NewTime(time.Now())
+	reconcileEndTime := time.Now().Format(nanoSecondsLayout)
 	workload.Status.EndTime = reconcileEndTime
 
 	if err = r.Status().Update(ctx, workload); err != nil {

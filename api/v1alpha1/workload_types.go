@@ -55,9 +55,9 @@ type WorkloadStatus struct {
 	Message string `json:"message,omitempty"`
 
 	// StartTime is the timestamp representing the server time when this Workload started being reconciled by the operator
-	StartTime metav1.Time `json:"startTime,omitempty"`
+	StartTime string `json:"startTime,omitempty"`
 	// EndTime is the timestamp representing the server time when this Workload ended being reconciled by the operator
-	EndTime metav1.Time `json:"endTime,omitempty"`
+	EndTime string `json:"endTime,omitempty"`
 
 	// Conditions represent the latest available observations of an object's state
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`

@@ -154,7 +154,6 @@ spec:
               endTime:
                 description: EndTime is the timestamp representing the server time
                   when this Workload ended being reconciled by the operator
-                format: date-time
                 type: string
               message:
                 description: Detailed message about the current status of the workload
@@ -166,7 +165,6 @@ spec:
               startTime:
                 description: StartTime is the timestamp representing the server time
                   when this Workload started being reconciled by the operator
-                format: date-time
                 type: string
             type: object
         type: object
