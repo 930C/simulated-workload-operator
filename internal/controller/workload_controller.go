@@ -25,7 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"strings"
 
@@ -43,13 +42,6 @@ type WorkloadReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
-}
-
-// ReconcileRequiredPredicate is a predicate function that determines whether reconciliation is required for an event.
-// It checks the 'processed' annotation in the new Objects and triggers reconciliation if the annotation is "false"
-// or if the annotation does not exist.
-type ReconcileRequiredPredicate struct {
-	predicate.Funcs
 }
 
 //+kubebuilder:rbac:groups=simulation.c930.net,resources=workloads,verbs=get;list;watch;create;update;patch;delete
@@ -179,26 +171,14 @@ func (r *WorkloadReconciler) updateWorkloadStatusCondition(ctx context.Context, 
 	return r.Status().Update(ctx, workload)
 }
 
-func (ReconcileRequiredPredicate) Update(e event.UpdateEvent) bool {
-	newWorkload, ok := e.ObjectNew.(*simulationv1alpha1.Workload)
-
-	if !ok {
-		fmt.Println("ReconcileRequiredPredicate.Update: Error converting event.Object to Workload")
-		return false
-	}
-
-	if newWorkload.Status.Executed {
-		return false
-	}
-
-	return true
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("workload-controller")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&simulationv1alpha1.Workload{}).
-		WithEventFilter(ReconcileRequiredPredicate{}).
+		WithEventFilter(predicate.Or(
+			predicate.GenerationChangedPredicate{},
+			predicate.LabelChangedPredicate{},
+			predicate.AnnotationChangedPredicate{})).
 		Complete(r)
 }
