@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"fmt"
 	simulationv1alpha1 "github.com/930C/simulated-workload-operator/api/v1alpha1"
 	"github.com/go-logr/logr"
@@ -38,12 +37,11 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"time"
 )
 
-const workloadFinalizer = "workload.c930.net/finalizer"
+const nanoSecondsLayout = "2006-01-02T15:04:05.999999999Z07:00"
 
 // WorkloadReconciler reconciles a Workload object
 type WorkloadReconciler struct {
@@ -69,7 +67,6 @@ type WorkloadReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.17.2/pkg/reconcile
 func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	// Store the current server time as the reconciliation start timestamp
-	const nanoSecondsLayout = "2006-01-02T15:04:05.999999999Z07:00"
 	reconcileStartTime := time.Now().Format(nanoSecondsLayout)
 
 	logger := log.FromContext(ctx)
@@ -86,18 +83,8 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// Adds a finalizer to define some operations which should occur before the custom resource is deleted.
-	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers
-	err = r.handleFinalizer(ctx, workload)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
 	// Check if Workload instance is about to be deleted
-	deleted, err := r.handleWorkloadDeletion(ctx, workload) // ?
-	if err != nil {
-		return ctrl.Result{}, err
-	} else if deleted {
+	if deleted := r.handleWorkloadDeletion(ctx, workload); deleted {
 		logger.Info("Workload instance deleted")
 		return ctrl.Result{}, nil
 	}
@@ -109,46 +96,18 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// Get the latest state of the Workload Custom Resource
-	if err = r.Get(ctx, req.NamespacedName, workload); err != nil {
+	err = r.handleWorkloadProcessAnnotation(ctx, workload)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("Workload resource not found. Ignoring since object must be deleted.")
 			return ctrl.Result{}, nil
 		}
-		logger.Error(err, "Failed to get Workload")
+		logger.Error(err, "failed to process Workload annotation")
 		return ctrl.Result{}, err
 	}
 
-	// Mark the workload as processed before updating its status.
-	if workload.Annotations == nil {
-		workload.Annotations = make(map[string]string)
-	}
-	workload.Annotations["processed"] = "true"
-
-	// Update the Workload to save the annotations
-	if err = r.Update(ctx, workload); err != nil {
-		logger.Error(err, "Failed to update workload with annotation")
-		return ctrl.Result{}, err
-	}
-
-	// The following implementation will update the status
-	// of the Workload Custom Resource to indicate that the
-	// reconciliation is successful.
-	logger.Info("Updating final Workload status")
-	meta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
-		Type:    "Available",
-		Status:  metav1.ConditionTrue,
-		Reason:  "Reconciling",
-		Message: fmt.Sprintf("The workload has been successfully processed."),
-	})
-
-	workload.Status.StartTime = reconcileStartTime
-	// Store the current server time as the reconciliation end timestamp
-	reconcileEndTime := time.Now().Format(nanoSecondsLayout)
-	workload.Status.EndTime = reconcileEndTime
-
-	if err = r.Status().Update(ctx, workload); err != nil {
-		logger.Error(err, "Failed to update last Workload status")
+	err = r.updateWorkloadStatus(ctx, workload, reconcileStartTime)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -379,107 +338,12 @@ func (r *WorkloadReconciler) handleInitialStatus(ctx context.Context, workload *
 	return nil
 }
 
-func (r *WorkloadReconciler) handleFinalizer(ctx context.Context, workload *simulationv1alpha1.Workload) error {
-	logger := log.FromContext(ctx)
-
-	// First, check if the finalizer is already present to avoid unnecessary updates
-	if controllerutil.ContainsFinalizer(workload, workloadFinalizer) {
-		return nil
+func (r *WorkloadReconciler) handleWorkloadDeletion(ctx context.Context, workload *simulationv1alpha1.Workload) bool {
+	if workload.GetDeletionTimestamp() != nil {
+		return true
 	}
 
-	logger.Info("Adding Finalizer for Workload")
-
-	// Get the latest state of the Workload Custom Resource
-	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: workload.Namespace,
-		Name:      workload.Name,
-	}, workload); err != nil {
-		logger.Error(err, "Failed to get Workload (In finalizer)")
-		return err
-	}
-
-	controllerutil.AddFinalizer(workload, workloadFinalizer)
-
-	if err := r.updateWithRetry(ctx, workload); err != nil {
-		logger.Error(err, "Failed to add finalizer for Workload")
-		return err
-	}
-
-	logger.Info("Finalizer added for Workload")
-	return nil
-}
-
-func (r *WorkloadReconciler) handleWorkloadDeletion(ctx context.Context, workload *simulationv1alpha1.Workload) (bool, error) {
-	logger := log.FromContext(ctx)
-
-	isWorkloadMarkedToBeDeleted := workload.GetDeletionTimestamp() != nil
-	if isWorkloadMarkedToBeDeleted {
-		logger.Info("Workload is marked to be deleted")
-		if controllerutil.ContainsFinalizer(workload, workloadFinalizer) {
-			logger.Info("Performing Finalizer Operations for Workload before the deletion of the CR")
-
-			// Add "Downgrade" status to indicate that this process is terminating
-			meta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
-				Type:    "Degraded",
-				Status:  metav1.ConditionUnknown,
-				Reason:  "Finalizing",
-				Message: fmt.Sprintf("Performing finalizer operations for the custom resource: %s ", workload.Name),
-			})
-
-			if err := r.updateStatusWithRetry(ctx, workload); err != nil {
-				if apierrors.IsNotFound(err) {
-					logger.Info("Workload resource not found. Ignoring since object must be deleted")
-					return true, nil // Return empty result when the resource is not found to avoid requeue
-				}
-				logger.Error(err, "Failed to update Workload status")
-				return false, err
-			}
-
-			r.Recorder.Event(workload, "Warning", "Deleting", fmt.Sprintf("Custom Resource %s is being deleted from the namespace %s", workload.Name, workload.Namespace))
-
-			if err := r.Get(ctx, types.NamespacedName{
-				Namespace: workload.Namespace,
-				Name:      workload.Name,
-			}, workload); err != nil {
-				logger.Error(err, "failed to re-fetch")
-				return false, err
-			}
-
-			meta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
-				Type:    "Downgraded",
-				Status:  metav1.ConditionTrue,
-				Reason:  "Finalizing",
-				Message: fmt.Sprintf("Finalizer operations for custom resource %s name were successfully accomplished", workload.Name),
-			})
-
-			if err := r.updateStatusWithRetry(ctx, workload); err != nil {
-				if apierrors.IsNotFound(err) {
-					logger.Info("Workload resource not found. Ignoring since object must be deleted")
-					return true, nil // Return empty result when the resource is not found to avoid requeue
-				}
-
-				errString := fmt.Sprintf("Failed to update status for Workload: %s using retry", workload.Name)
-				logger.Error(err, errString)
-				return false, err
-			}
-
-			logger.Info("Removing Finalizer for Workload after successfully perform the operations")
-			if ok := controllerutil.RemoveFinalizer(workload, workloadFinalizer); !ok {
-				err := errors.New("failed to remove finalizer for Workload")
-				logger.Error(err, "Failed to remove finalizer for Workload")
-				return false, err
-			}
-
-			if err := r.Update(ctx, workload); err != nil {
-				logger.Error(err, "Failed to remove finalizer for Workload")
-				return false, err
-			}
-
-			logger.Info("Finalizer removed for Workload")
-			return true, nil
-		}
-	}
-	return false, nil
+	return false
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -530,4 +394,49 @@ func (r *WorkloadReconciler) updateStatusWithRetry(ctx context.Context, workload
 		}
 		return true, nil // success, stop retrying
 	})
+}
+
+func (r *WorkloadReconciler) handleWorkloadProcessAnnotation(ctx context.Context, workload *simulationv1alpha1.Workload) error {
+	// Get the latest state of the Workload Custom Resource
+	if err := r.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name}, workload); err != nil {
+		return err
+	}
+
+	// Mark the workload as processed before updating its status.
+	if workload.Annotations == nil {
+		workload.Annotations = make(map[string]string)
+	}
+	workload.Annotations["processed"] = "true"
+
+	// Update the Workload to save the annotations
+	if err := r.Update(ctx, workload); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *WorkloadReconciler) updateWorkloadStatus(ctx context.Context, workload *simulationv1alpha1.Workload, reconcileStartTime string) error {
+	// The following implementation will update the status of the Workload Custom Resource to indicate that the
+	// reconciliation is successful.
+	logger := log.FromContext(ctx)
+	logger.Info("Updating final Workload status")
+	meta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{
+		Type:    "Available",
+		Status:  metav1.ConditionTrue,
+		Reason:  "Reconciling",
+		Message: fmt.Sprintf("The workload has been successfully processed."),
+	})
+
+	workload.Status.StartTime = reconcileStartTime
+	// Store the current server time as the reconciliation end timestamp
+	reconcileEndTime := time.Now().Format(nanoSecondsLayout)
+	workload.Status.EndTime = reconcileEndTime
+
+	if err := r.Status().Update(ctx, workload); err != nil {
+		logger.Error(err, "Failed to update last Workload status")
+		return err
+	}
+
+	return nil
 }
