@@ -38,24 +38,16 @@ type WorkloadSpec struct {
 	// Intensity of the workload for CPU or Memory or IO
 	// This could be percentage for CPU, size in MB for Memory, and IO speed in MB/s
 	Intensity int `json:"intensity,omitempty"`
-
-	// Additional parameters might be needed depending on the simulation type
-	Parameters map[string]string `json:"parameters,omitempty"`
-
-	// List of dependent resources this controller should manage
-	DependentResources []DependentResourceSpec `json:"dependentResources,omitempty"`
 }
 
 // WorkloadStatus defines the observed state of Workload
 type WorkloadStatus struct {
 	// Reflects the current state of the simulation
-	Phase string `json:"phase,omitempty"`
-
-	// Detailed message about the current status of the workload simulation
-	Message string `json:"message,omitempty"`
+	Executed bool `json:"executed,omitempty"`
 
 	// StartTime is the timestamp representing the server time when this Workload started being reconciled by the operator
 	StartTime string `json:"startTime,omitempty"`
+
 	// EndTime is the timestamp representing the server time when this Workload ended being reconciled by the operator
 	EndTime string `json:"endTime,omitempty"`
 

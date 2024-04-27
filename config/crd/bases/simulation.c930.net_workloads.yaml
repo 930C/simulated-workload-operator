@@ -39,26 +39,6 @@ spec:
           spec:
             description: WorkloadSpec defines the desired state of Workload
             properties:
-              dependentResources:
-                description: List of dependent resources this controller should manage
-                items:
-                  properties:
-                    quantity:
-                      description: Quantity of the resources to create
-                      type: integer
-                    resourceType:
-                      description: Type of the Kubernetes resource (e.g., Pod, ConfigMap)
-                      type: string
-                    template:
-                      description: Template of the resource if applicable (e.g., for
-                        creating specific types of Pods or ConfigMaps)
-                      type: object
-                      x-kubernetes-preserve-unknown-fields: true
-                  required:
-                  - quantity
-                  - resourceType
-                  type: object
-                type: array
               duration:
                 description: Duration for the simulation or sleep (in seconds)
                 type: integer
@@ -67,12 +47,6 @@ spec:
                   Intensity of the workload for CPU or Memory or IO
                   This could be percentage for CPU, size in MB for Memory, and IO speed in MB/s
                 type: integer
-              parameters:
-                additionalProperties:
-                  type: string
-                description: Additional parameters might be needed depending on the
-                  simulation type
-                type: object
               simulationType:
                 description: 'Type of simulation to perform: CPU, Memory, IO, Sleep'
                 type: string
@@ -155,13 +129,9 @@ spec:
                 description: EndTime is the timestamp representing the server time
                   when this Workload ended being reconciled by the operator
                 type: string
-              message:
-                description: Detailed message about the current status of the workload
-                  simulation
-                type: string
-              phase:
+              executed:
                 description: Reflects the current state of the simulation
-                type: string
+                type: boolean
               startTime:
                 description: StartTime is the timestamp representing the server time
                   when this Workload started being reconciled by the operator
