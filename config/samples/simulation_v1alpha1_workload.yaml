@@ -6,4 +6,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: workload-sample
 spec:
+  simulationType: CPU
+  duration: 5
+  intensity: 10
   # TODO(user): Add fields here

@@ -18,19 +18,16 @@ package controller
 
 import (
 	"context"
-	"crypto/rand"
 	"fmt"
 	simulationv1alpha1 "github.com/930C/simulated-workload-operator/api/v1alpha1"
-	"github.com/go-logr/logr"
-	"io"
+	"github.com/930C/simulated-workload-operator/internal/simulation"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
-	rand2 "math/rand"
-	"os"
-	runtime2 "runtime"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -48,6 +45,13 @@ type WorkloadReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+}
+
+// ReconcileRequiredPredicate is a predicate function that determines whether reconciliation is required for an event.
+// It checks the 'processed' annotation in the new Objects and triggers reconciliation if the annotation is "false"
+// or if the annotation does not exist.
+type ReconcileRequiredPredicate struct {
+	predicate.Funcs
 }
 
 //+kubebuilder:rbac:groups=simulation.c930.net,resources=workloads,verbs=get;list;watch;create;update;patch;delete
@@ -77,50 +81,49 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err // err can be nil, so we return it directly
 	}
 
-	// Let's just set the status as Unknown when no status is available
-	err = r.handleInitialStatus(ctx, workload)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	workload = workload.DeepCopy() // Create a deep copy to avoid overwriting the original object (to avoid conflicts)
 
-	// Check if Workload instance is about to be deleted
-	if deleted := r.handleWorkloadDeletion(ctx, workload); deleted {
-		logger.Info("Workload instance deleted")
-		return ctrl.Result{}, nil
+	// Let's just set the status as Unknown when no status is available
+	if err = r.handleInitialStatus(ctx, workload); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Run in-operator simulations
-	err = r.RunWorkload(ctx, workload)
-	if err != nil {
-		logger.Error(err, "Failed to run simulation")
-		return ctrl.Result{}, err
-	}
-
-	err = r.handleWorkloadProcessAnnotation(ctx, workload)
+	alreadyProcessed, err := r.RunWorkload(ctx, workload)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Info("Workload resource not found. Ignoring since object must be deleted.")
 			return ctrl.Result{}, nil
 		}
-		logger.Error(err, "failed to process Workload annotation")
+
+		logger.Error(err, "Failed to run simulation")
 		return ctrl.Result{}, err
 	}
 
-	err = r.updateWorkloadStatus(ctx, workload, reconcileStartTime)
-	if err != nil {
+	if alreadyProcessed {
+		return ctrl.Result{}, nil
+	}
+
+	if err = r.updateWorkloadProcessAnnotation(ctx, workload); err != nil {
+		logger.Error(err, "Failed to process Workload annotation")
+		return ctrl.Result{}, err
+	}
+
+	if err = r.updateWorkloadStatus(ctx, workload, reconcileStartTime); err != nil {
+		logger.Error(err, "Failed to update Workload status")
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
 }
 
-func (r *WorkloadReconciler) RunWorkload(ctx context.Context, workload *simulationv1alpha1.Workload) error {
+func (r *WorkloadReconciler) RunWorkload(ctx context.Context, workload *simulationv1alpha1.Workload) (bool, error) {
 	logger := log.FromContext(ctx)
 
 	// Check if the workload has already been processed and if there have been no spec changes.
 	if val, ok := workload.Annotations["processed"]; ok && val == "true" {
 		logger.Info("SKIPPING processing as workload is marked processed and no spec change")
-		return nil
+		return true, nil
 	}
 
 	// Depending on the Workloadtype, run the workload
@@ -128,13 +131,13 @@ func (r *WorkloadReconciler) RunWorkload(ctx context.Context, workload *simulati
 
 	switch strings.ToLower(workload.Spec.SimulationType) {
 	case "cpu":
-		runCPUWorkload(workload.Spec.Duration)
+		simulation.RunCPUWorkload(workload.Spec.Duration)
 	case "memory":
-		runMemoryLoad(workload.Spec.Duration, workload.Spec.Intensity)
+		simulation.RunMemoryLoad(workload.Spec.Duration, workload.Spec.Intensity)
 	case "io":
-		if err := simulateIO(ctx, workload.Spec.Duration, workload.Spec.Intensity); err != nil {
+		if err := simulation.SimulateIO(ctx, workload.Spec.Duration, workload.Spec.Intensity); err != nil {
 			logger.Error(err, "Failed to simulate I/O workload")
-			return err
+			return false, err
 		}
 	case "sleep":
 		sleepDuration := time.Duration(workload.Spec.Duration) * time.Second
@@ -142,157 +145,11 @@ func (r *WorkloadReconciler) RunWorkload(ctx context.Context, workload *simulati
 		time.Sleep(sleepDuration)
 	default:
 		logger.Info("No workload simulation required", "Workload.Spec.SimulationType", workload.Spec.SimulationType)
-		return nil
+		return false, nil
 	}
 
 	logger.Info("Workload simulation completed", "Workload.Spec.SimulationType", workload.Spec.SimulationType)
-	return nil
-}
-
-func runCPUWorkload(duration int) {
-	// Run any CPU workload
-	done := make(chan int)
-
-	for i := 0; i < runtime2.NumCPU(); i++ {
-		go func() {
-			for {
-				select {
-				case <-done:
-					return
-				default:
-				}
-			}
-		}()
-	}
-
-	time.Sleep(time.Duration(duration) * time.Second)
-	close(done)
-}
-
-func runMemoryLoad(duration int, megabytes int) {
-	type MemoryLoad struct {
-		Block []byte
-	}
-
-	numBlocks := megabytes   // Adjust this value depending on how much memory you want to consume.
-	blockSize := 1024 * 1024 // Each block is 1 megabyte.
-
-	var blocks = make([]MemoryLoad, numBlocks)
-
-	for i := 0; i < numBlocks; i++ {
-		blocks[i] = MemoryLoad{make([]byte, blockSize)}
-
-		if i%100 == 0 {
-			fmt.Printf("Allocated %v MB\n", (i+1)*blockSize/(1024*1024))
-		}
-	}
-
-	fmt.Println("Holding memory for ", duration, " seconds...")
-	time.Sleep(time.Second * time.Duration(duration))
-	fmt.Println("Memory sleep finished")
-	runtime2.GC()
-}
-
-// simulateIO simulates file I/O operations by writing and reading back random data from a temporary file.
-// `duration` specifies how long the I/O operations should run, and `sizeMB` specifies the size of the data to write (in each operation in megabytes)
-func simulateIO(ctx context.Context, duration int, sizeMB int) error {
-	logger := log.FromContext(ctx)
-	logger.Info("Starting I/O simulation", "Duration", duration, "SizeMB", sizeMB)
-
-	// Define the duration for the simulation
-	endTime := time.Now().Add(time.Duration(duration) * time.Second)
-	randomSource := rand2.New(rand2.NewSource(time.Now().UnixNano()))
-
-	for time.Now().Before(endTime) {
-		fileSize := randomSource.Intn(sizeMB) + 1 // Ensure non-zero file size
-		data := make([]byte, fileSize*1024*1024)
-		_, err := rand.Read(data)
-		if err != nil {
-			logger.Error(err, "Failed to generate random data")
-			return err
-		}
-
-		// Simulate mixed read/write and random access by creating multiple files
-		for i := 0; i < 5; i++ { // Create multiple files to simulate handling multiple resources
-			fileName := fmt.Sprintf("simulate-io-%d", i)
-			err := performFileOperations(ctx, fileName, data)
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	runtime2.GC()
-
-	logger.Info("Complex I/O simulation completed")
-	return nil
-}
-
-// performFileOperations handles the actual file writing and reading, simulating random access and mixed operations.
-func performFileOperations(ctx context.Context, fileName string, data []byte) error {
-	logger := log.FromContext(ctx)
-	// Create a temporary file
-	tmpfile, err := os.CreateTemp("", fileName)
-	if err != nil {
-		logger.Error(err, "Failed to create temporary file")
-		return err
-	}
-	defer func(name string) {
-		err := os.Remove(name)
-		if err != nil {
-			logger.Error(err, "Failed to remove temporary file")
-		}
-	}(tmpfile.Name()) // Clean up
-
-	// Randomly choose to write or read first to simulate mixed operations
-	if rand2.Int()%2 == 0 {
-		if err := writeAndReadFile(tmpfile, data, logger); err != nil {
-			return err
-		}
-	} else {
-		if err := readFileAndWrite(tmpfile, data, logger); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func writeAndReadFile(file *os.File, data []byte, logger logr.Logger) error {
-	defer file.Close()
-
-	if _, err := file.Write(data); err != nil {
-		logger.Error(err, "Failed to write to file")
-		return err
-	}
-
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		logger.Error(err, "Failed to seek in file")
-		return err
-	}
-
-	if _, err := io.ReadAll(file); err != nil {
-		logger.Error(err, "Failed to read from file")
-		return err
-	}
-
-	return nil
-}
-
-func readFileAndWrite(file *os.File, data []byte, logger logr.Logger) error {
-	defer file.Close()
-
-	if _, err := io.ReadAll(file); err != nil {
-		logger.Error(err, "Failed to read from file")
-		return err
-	}
-
-	if _, err := file.Write(data); err != nil {
-		logger.Error(err, "Failed to write to file")
-		return err
-	}
-
-	return nil
+	return false, nil
 }
 
 func (r *WorkloadReconciler) getWorkloadInstance(ctx context.Context, req ctrl.Request) (*simulationv1alpha1.Workload, error) {
@@ -316,30 +173,24 @@ func (r *WorkloadReconciler) handleInitialStatus(ctx context.Context, workload *
 	logger := log.FromContext(ctx)
 	if workload.Status.Conditions == nil || len(workload.Status.Conditions) == 0 {
 		logger.Info("Setting initial status for Workload")
+
 		meta.SetStatusCondition(&workload.Status.Conditions, metav1.Condition{Type: "Available", Status: metav1.ConditionUnknown, Reason: "Reconciling", Message: "Starting reconciliation"})
-		if err := r.updateWithRetry(ctx, workload); err != nil {
+
+		if err := r.Update(ctx, workload); err != nil {
 			logger.Error(err, "Failed to update Workload status")
 			return err // Return error when the resource is not found to requeue and try again
-		}
-
-		// Let's re-fetch the Workload Custom Resource after updating the status
-		// so that we have the latest state of the resource on the cluster and we will avoid
-		// raising the error "the object has been modified, please apply
-		// your changes to the latest version and try again" which would re-trigger the reconciliation
-		// if we try to update it again in the following operations
-		if err := r.Get(ctx, types.NamespacedName{
-			Namespace: workload.Namespace,
-			Name:      workload.Name,
-		}, workload); err != nil {
-			logger.Error(err, "Failed to re-fetch Workload")
-			return err
 		}
 	}
 	return nil
 }
 
-func (r *WorkloadReconciler) handleWorkloadDeletion(ctx context.Context, workload *simulationv1alpha1.Workload) bool {
-	if workload.GetDeletionTimestamp() != nil {
+func (ReconcileRequiredPredicate) Update(e event.UpdateEvent) bool {
+	// Check 'processed' annotation in new Objects
+	newProcessed, annotationExists := e.ObjectNew.GetAnnotations()["processed"]
+
+	// Trigger reconciliation if 'processed' annotation is "false" OR if 'processed' annotation does not exist
+	if !annotationExists || newProcessed == "false" {
+		fmt.Println("ReconcileRequiredPredicate.Update: Reconcile required")
 		return true
 	}
 
@@ -351,6 +202,7 @@ func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	r.Recorder = mgr.GetEventRecorderFor("workload-controller")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&simulationv1alpha1.Workload{}).
+		WithEventFilter(ReconcileRequiredPredicate{}).
 		Complete(r)
 }
 
@@ -375,33 +227,7 @@ func (r *WorkloadReconciler) updateWithRetry(ctx context.Context, workload *simu
 	})
 }
 
-func (r *WorkloadReconciler) updateStatusWithRetry(ctx context.Context, workload *simulationv1alpha1.Workload) error {
-	return wait.ExponentialBackoff(wait.Backoff{
-		Duration: 100 * time.Millisecond, // initial delay
-		Factor:   2.0,                    // multiplier for subsequent delays
-		Jitter:   0.1,                    // random variation in delay calculation
-		Steps:    5,                      // max number of attempts
-	}, func() (bool, error) {
-		if err := r.Status().Update(ctx, workload); err != nil {
-			if apierrors.IsConflict(err) {
-				// Conflict detected, refresh the object and try again
-				if err := r.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name}, workload); err != nil {
-					return false, err // return error and stop retrying if fetch fails
-				}
-				return false, nil // fetch successful, retry the update
-			}
-			return false, err // some other error, stop retrying
-		}
-		return true, nil // success, stop retrying
-	})
-}
-
-func (r *WorkloadReconciler) handleWorkloadProcessAnnotation(ctx context.Context, workload *simulationv1alpha1.Workload) error {
-	// Get the latest state of the Workload Custom Resource
-	if err := r.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name}, workload); err != nil {
-		return err
-	}
-
+func (r *WorkloadReconciler) updateWorkloadProcessAnnotation(ctx context.Context, workload *simulationv1alpha1.Workload) error {
 	// Mark the workload as processed before updating its status.
 	if workload.Annotations == nil {
 		workload.Annotations = make(map[string]string)
@@ -433,7 +259,18 @@ func (r *WorkloadReconciler) updateWorkloadStatus(ctx context.Context, workload 
 	reconcileEndTime := time.Now().Format(nanoSecondsLayout)
 	workload.Status.EndTime = reconcileEndTime
 
-	if err := r.Status().Update(ctx, workload); err != nil {
+	//// Make the Kubernetes request within a retryable loop to handle potential conflicting writes from other components
+	//err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	//	// Fetch the latest version to get the latest ResourceVersion to avoid conflicts
+	//	if err := r.Get(ctx, types.NamespacedName{Namespace: workload.Namespace, Name: workload.Name}, workload); err != nil {
+	//		return err
+	//	}
+	//	return r.Status().Update(ctx, workload)
+	//})
+
+	err := r.Status().Update(ctx, workload)
+
+	if err != nil {
 		logger.Error(err, "Failed to update last Workload status")
 		return err
 	}
