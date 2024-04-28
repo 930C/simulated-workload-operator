@@ -59,7 +59,7 @@ func RunMemoryLoad(duration int, megabytes int) {
 
 // SimulateIO simulates file I/O operations by writing and reading back random data from a temporary file.
 // `duration` specifies how long the I/O operations should run, and `sizeMB` specifies the size of the data to write (in each operation in megabytes)
-func SimulateIO(ctx context.Context, duration int, sizeMB int) error {
+func SimulateIO(ctx context.Context, duration int, sizeMB int) {
 	logger := log.FromContext(ctx)
 	logger.Info("Starting I/O simulation", "Duration", duration, "SizeMB", sizeMB)
 
@@ -73,7 +73,6 @@ func SimulateIO(ctx context.Context, duration int, sizeMB int) error {
 		_, err := rand.Read(data)
 		if err != nil {
 			logger.Error(err, "Failed to generate random data")
-			return err
 		}
 
 		// Simulate mixed read/write and random access by creating multiple files
@@ -81,15 +80,14 @@ func SimulateIO(ctx context.Context, duration int, sizeMB int) error {
 			fileName := fmt.Sprintf("simulate-io-%d", i)
 			err := performFileOperations(ctx, fileName, data)
 			if err != nil {
-				return err
+				logger.Error(err, "Failed to perform file operations")
 			}
 		}
 	}
 
-	runtime2.GC()
+	runtime2.GC() // Force garbage collection to clean up memory
 
 	logger.Info("Complex I/O simulation completed")
-	return nil
 }
 
 // performFileOperations handles the actual file writing and reading, simulating random access and mixed operations.

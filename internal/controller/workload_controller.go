@@ -25,10 +25,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"strings"
 
-	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -40,15 +40,13 @@ const nanoSecondsLayout = "2006-01-02T15:04:05.999999999Z07:00"
 // WorkloadReconciler reconciles a Workload object
 type WorkloadReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme *runtime.Scheme
 }
 
 //+kubebuilder:rbac:groups=simulation.c930.net,resources=workloads,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=simulation.c930.net,resources=workloads/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=simulation.c930.net,resources=workloads/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -86,10 +84,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Run in-operator simulations
-	if err := r.runWorkload(ctx, workload); err != nil {
-		logger.Error(err, "failed to run workload")
-		return ctrl.Result{}, err
-	}
+	r.runWorkload(ctx, workload)
 
 	// Update the status of the Workload CR to indicate that the reconciliation is successful.
 	if err := r.updateWorkloadStatusCondition(ctx, workload, reconcileStartTime); err != nil {
@@ -100,13 +95,12 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{}, nil
 }
 
-func (r *WorkloadReconciler) runWorkload(ctx context.Context, workload *simulationv1alpha1.Workload) error {
+func (r *WorkloadReconciler) runWorkload(ctx context.Context, workload *simulationv1alpha1.Workload) {
 	logger := log.FromContext(ctx)
 
 	// Check if the workload has already been processed and if there have been no spec changes.
 	if workload.Status.Executed {
 		logger.Info("SKIPPING processing as workload is marked processed and no spec change")
-		return nil
 	}
 
 	// Depending on the Workloadtype, run the workload
@@ -118,21 +112,16 @@ func (r *WorkloadReconciler) runWorkload(ctx context.Context, workload *simulati
 	case "memory":
 		simulation.RunMemoryLoad(workload.Spec.Duration, workload.Spec.Intensity)
 	case "io":
-		if err := simulation.SimulateIO(ctx, workload.Spec.Duration, workload.Spec.Intensity); err != nil {
-			logger.Error(err, "Failed to simulate I/O workload")
-			return err
-		}
+		simulation.SimulateIO(ctx, workload.Spec.Duration, workload.Spec.Intensity)
 	case "sleep":
 		sleepDuration := time.Duration(workload.Spec.Duration) * time.Second
 		logger.Info("Sleeping for", "Duration", sleepDuration)
 		time.Sleep(sleepDuration)
 	default:
 		logger.Info("No workload simulation required", "Workload.Spec.SimulationType", workload.Spec.SimulationType)
-		return nil
 	}
 
 	logger.Info("Workload simulation completed", "Workload.Spec.SimulationType", workload.Spec.SimulationType)
-	return nil
 }
 
 // handleInitialStatusCondition sets the initial status condition for the Workload CR when no condition is available.
@@ -173,12 +162,12 @@ func (r *WorkloadReconciler) updateWorkloadStatusCondition(ctx context.Context, 
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.Recorder = mgr.GetEventRecorderFor("workload-controller")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&simulationv1alpha1.Workload{}).
 		WithEventFilter(predicate.Or(
 			predicate.GenerationChangedPredicate{},
 			predicate.LabelChangedPredicate{},
 			predicate.AnnotationChangedPredicate{})).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		Complete(r)
 }
