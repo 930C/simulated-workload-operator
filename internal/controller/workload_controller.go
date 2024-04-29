@@ -86,6 +86,13 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Run in-operator simulations
 	r.runWorkload(ctx, workload)
 
+	// Reconcile optional NGINX deployment
+	err := r.ReconcileNginxDeployment(ctx, workload)
+	if err != nil {
+		logger.Error(err, "Failed to reconcile NGINX deployment")
+		return ctrl.Result{}, err
+	}
+
 	// Update the status of the Workload CR to indicate that the reconciliation is successful.
 	if err := r.updateWorkloadStatusCondition(ctx, workload, reconcileStartTime); err != nil {
 		logger.Error(err, "Failed to update Workload status")

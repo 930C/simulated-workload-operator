@@ -47,6 +47,23 @@ spec:
                   Intensity of the workload for CPU or Memory or IO
                   This could be percentage for CPU, size in MB for Memory, and IO speed in MB/s
                 type: integer
+              nginx:
+                description: Nginx configuration
+                properties:
+                  configMapData:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  html:
+                    type: string
+                  replicas:
+                    format: int32
+                    type: integer
+                  secretData:
+                    additionalProperties:
+                      type: string
+                    type: object
+                type: object
               simulationType:
                 description: 'Type of simulation to perform: CPU, Memory, IO, Sleep'
                 type: string
@@ -132,6 +149,34 @@ spec:
               executed:
                 description: Reflects the current state of the simulation
                 type: boolean
+              resourceHashes:
+                description: ResourceHashes represent the hash of the resources created
+                  by the operator
+                properties:
+                  configMapHash:
+                    type: string
+                  htmlHash:
+                    type: string
+                  secretHash:
+                    type: string
+                type: object
+              resourceStatus:
+                description: ResourceStatus represent the status of the resources
+                  created by the operator
+                properties:
+                  availableReplicas:
+                    format: int32
+                    type: integer
+                  readyReplicas:
+                    format: int32
+                    type: integer
+                  replicas:
+                    format: int32
+                    type: integer
+                  upToDateReplicas:
+                    format: int32
+                    type: integer
+                type: object
               startTime:
                 description: StartTime is the timestamp representing the server time
                   when this Workload started being reconciled by the operator

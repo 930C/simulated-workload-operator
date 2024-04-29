@@ -23,6 +23,26 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+type NginxConfiguration struct {
+	Replicas      *int32            `json:"replicas,omitempty"`
+	ConfigMapData map[string]string `json:"configMapData,omitempty"`
+	SecretData    map[string]string `json:"secretData,omitempty"`
+	HTML          string            `json:"html,omitempty"`
+}
+
+type ResourceHashes struct {
+	ConfigMapHash string `json:"configMapHash,omitempty"`
+	SecretHash    string `json:"secretHash,omitempty"`
+	HtmlHash      string `json:"htmlHash,omitempty"`
+}
+
+type DeploymentStatus struct {
+	Replicas          int32 `json:"replicas,omitempty"`
+	AvailableReplicas int32 `json:"availableReplicas,omitempty"`
+	ReadyReplicas     int32 `json:"readyReplicas,omitempty"`
+	UpToDateReplicas  int32 `json:"upToDateReplicas,omitempty"`
+}
+
 // WorkloadSpec defines the desired state of Workload
 type WorkloadSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
@@ -37,6 +57,9 @@ type WorkloadSpec struct {
 	// Intensity of the workload for CPU or Memory or IO
 	// This could be percentage for CPU, size in MB for Memory, and IO speed in MB/s
 	Intensity int `json:"intensity,omitempty"`
+
+	// Nginx configuration
+	Nginx *NginxConfiguration `json:"nginx,omitempty"`
 }
 
 // WorkloadStatus defines the observed state of Workload
@@ -52,6 +75,12 @@ type WorkloadStatus struct {
 
 	// Conditions represent the latest available observations of an object's state
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
+
+	// ResourceHashes represent the hash of the resources created by the operator
+	ResourceHashes ResourceHashes `json:"resourceHashes,omitempty"`
+
+	// ResourceStatus represent the status of the resources created by the operator
+	DeploymentStatus DeploymentStatus `json:"resourceStatus,omitempty"`
 }
 
 //+kubebuilder:object:root=true
