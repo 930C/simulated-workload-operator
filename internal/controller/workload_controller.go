@@ -21,6 +21,8 @@ import (
 	"fmt"
 	simulationv1alpha1 "github.com/930C/simulated-workload-operator/api/v1alpha1"
 	"github.com/930C/simulated-workload-operator/internal/simulation"
+	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -89,7 +91,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Reconcile optional NGINX deployment
 	err := r.ReconcileNginxDeployment(ctx, workload)
 	if err != nil {
-		logger.Error(err, "Failed to reconcile NGINX deployment")
+		logger.Error(err, "Failed to reconcile entire NGINX setup")
 		return ctrl.Result{}, err
 	}
 
@@ -173,8 +175,11 @@ func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&simulationv1alpha1.Workload{}).
 		WithEventFilter(predicate.Or(
 			predicate.GenerationChangedPredicate{},
-			predicate.LabelChangedPredicate{},
-			predicate.AnnotationChangedPredicate{})).
+		)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
+		Owns(&v1.Service{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&v1.ConfigMap{}).
+		Owns(&v1.Secret{}).
 		Complete(r)
 }

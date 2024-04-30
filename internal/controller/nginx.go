@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/json"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -54,7 +55,7 @@ func (r *WorkloadReconciler) ReconcileNginxDeployment(ctx context.Context, workl
 
 	// Deploy Nginx
 	if err := r.reconcileNginx(ctx, workload); err != nil {
-		logger.Error(err, "Failed to deploy Nginx")
+		logger.Error(err, "Failed to reconcile Nginx")
 		return err
 	}
 
@@ -173,6 +174,13 @@ func (r *WorkloadReconciler) reconcileConfigMap(ctx context.Context, workload *s
 			Annotations: map[string]string{
 				"data-hash": hash,
 			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: workload.APIVersion,
+				Kind:       workload.Kind,
+				Name:       workload.Name,
+				UID:        workload.UID,
+				Controller: ptr.To(true),
+			}},
 		},
 		Data: workload.Spec.Nginx.ConfigMapData,
 	}
@@ -229,6 +237,13 @@ func (r *WorkloadReconciler) reconcileSecret(ctx context.Context, workload *simu
 			Annotations: map[string]string{
 				"data-hash": hash,
 			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: workload.APIVersion,
+				Kind:       workload.Kind,
+				Name:       workload.Name,
+				UID:        workload.UID,
+				Controller: ptr.To(true),
+			}},
 		},
 		Data: encodeSecretData(workload.Spec.Nginx.SecretData),
 		Type: corev1.SecretTypeOpaque,
@@ -274,6 +289,13 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deploymentName,
 			Namespace: workload.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: workload.APIVersion,
+				Kind:       workload.Kind,
+				Name:       workload.Name,
+				UID:        workload.UID,
+				Controller: ptr.To(true),
+			}},
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: workload.Spec.Nginx.Replicas,
@@ -293,7 +315,7 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 					InitContainers: []corev1.Container{
 						{
 							Name:  workload.Name + "-init",
-							Image: "busybox",
+							Image: "alpine:latest",
 							Command: []string{"/bin/sh", "-c", `
 								apk add --no-cache gettext;
 								envsubst < /usr/share/nginx/html/template/index.html > /usr/share/nginx/html/index.html;
@@ -308,7 +330,7 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 							},
 							VolumeMounts: []corev1.VolumeMount{
 								{
-									Name:      "nginx-html",
+									Name:      "nginx-html-template",
 									ReadOnly:  true,
 									MountPath: "/usr/share/nginx/html/template",
 								},
@@ -327,15 +349,12 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 							Ports: []corev1.ContainerPort{{ContainerPort: 80}},
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "nginx-html", MountPath: "/usr/share/nginx/html", ReadOnly: true},
-								{Name: "config-volume", MountPath: "/etc/nginx/conf.d"},
-								{Name: "secret-volume", MountPath: "/etc/nginx/secrets", ReadOnly: true},
 							},
 						},
 					},
 					Volumes: []corev1.Volume{
-						{Name: "config-volume", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: workload.Name + configMapNameSuffix}}}},
-						{Name: "secret-volume", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: workload.Name + secretNameSuffix}}},
-						{Name: "nginx-html", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: workload.Name + htmlConfigMapSuffix}}}},
+						{Name: "nginx-html-template", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: workload.Name + htmlConfigMapSuffix}}}},
+						{Name: "nginx-html", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 					},
 				},
 			},
@@ -396,6 +415,13 @@ func (r *WorkloadReconciler) reconcileService(ctx context.Context, workload *sim
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      workload.Name + "-nginx-service",
 			Namespace: workload.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: workload.APIVersion,
+				Kind:       workload.Kind,
+				Name:       workload.Name,
+				UID:        workload.UID,
+				Controller: ptr.To(true),
+			}},
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
@@ -466,6 +492,13 @@ func (r *WorkloadReconciler) reconcileHTMLConfigMap(ctx context.Context, workloa
 			Annotations: map[string]string{
 				"data-hash": hash,
 			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: workload.APIVersion,
+				Kind:       workload.Kind,
+				Name:       workload.Name,
+				UID:        workload.UID,
+				Controller: ptr.To(true),
+			}},
 		},
 		Data: map[string]string{"index.html": workload.Spec.Nginx.HTML},
 	}
