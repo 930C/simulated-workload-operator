@@ -1,0 +1,17 @@
+apiVersion: sharding.timebertt.dev/v1alpha1
+kind: ClusterRing
+metadata:
+  name: swo-clusterring
+spec:
+  resources:
+    - group: simulation.c930.net
+      resource: workloads
+      controlledResources:
+        - group: ""
+          resource: configmaps
+        - group: ""
+          resource: services
+        - group: ""
+          resource: secrets
+        - group: apps
+          resource: deployments

@@ -1,0 +1,39 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sharding:clusterring:swo-clusterring
+rules:
+  - apiGroups:
+      - simulation.c930.net
+    resources:
+      - workloads
+    verbs:
+      - list
+      - patch
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - services
+      - secrets
+    verbs:
+      - list
+      - patch
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+    verbs:
+      - list
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sharding:clusterring:swo-clusterring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sharding:clusterring:swo-clusterring
+subjects:
+  - kind: ServiceAccount
+    name: sharder
+    namespace: sharding-system

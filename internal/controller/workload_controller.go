@@ -21,12 +21,14 @@ import (
 	"fmt"
 	simulationv1alpha1 "github.com/930C/simulated-workload-operator/api/v1alpha1"
 	"github.com/930C/simulated-workload-operator/internal/simulation"
+	shardcontroller "github.com/timebertt/kubernetes-controller-sharding/pkg/shard/controller"
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"strings"
@@ -174,16 +176,22 @@ func (r *WorkloadReconciler) updateWorkloadStatusCondition(ctx context.Context, 
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager, shardName string) error {
+	// ACKNOWLEDGE DRAIN OPERATIONS
+	// Use the shardcontroller package as helpers for:
+	// - a predicate that triggers when the drain label is present (even if the actual predicates don't trigger)
+	// - wrapping the actual reconciler a reconciler that handles the drain operation for us
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&simulationv1alpha1.Workload{}).
-		WithEventFilter(predicate.Or(
-			predicate.GenerationChangedPredicate{},
-		)).
+		For(&simulationv1alpha1.Workload{}, builder.WithPredicates(shardcontroller.Predicate("swo-clusterring", shardName, predicate.GenerationChangedPredicate{}))).
+		Owns(&v1.Service{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Owns(&appsv1.Deployment{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Owns(&v1.ConfigMap{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Owns(&v1.Secret{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
-		Owns(&v1.Service{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&v1.ConfigMap{}).
-		Owns(&v1.Secret{}).
-		Complete(r)
+		Complete(shardcontroller.NewShardedReconciler(mgr). // This wrapper adds a new reconciler that handles the shard and drain labels
+									For(&simulationv1alpha1.Workload{}). // must match the kind in For() above
+									InClusterRing("swo-clusterring").
+									WithShardName(shardName).
+									MustBuild(r),
+		)
 }

@@ -20,12 +20,16 @@ import (
 	"crypto/tls"
 	"flag"
 	"go.uber.org/zap/zapcore"
+	"k8s.io/apimachinery/pkg/labels"
 	"os"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	shardingv1alpha1 "github.com/timebertt/kubernetes-controller-sharding/pkg/apis/sharding/v1alpha1"
+	shardlease "github.com/timebertt/kubernetes-controller-sharding/pkg/shard/lease"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -96,7 +100,17 @@ func main() {
 		TLSOpts: tlsOpts,
 	})
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	restConfig := ctrl.GetConfigOrDie()
+
+	shardLease, err := shardlease.NewResourceLock(restConfig, nil, shardlease.Options{
+		ClusterRingName: "swo-clusterring",
+	})
+	if err != nil {
+		setupLog.Error(err, "unable to create shard lease")
+		os.Exit(1)
+	}
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsAddr,
@@ -105,8 +119,8 @@ func main() {
 		},
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "59328f07.c930.net",
+		//LeaderElection:         enableLeaderElection,
+		//LeaderElectionID:       "59328f07.c930.net",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -118,6 +132,25 @@ func main() {
 		// if you are doing or is intended to do any operation such as perform cleanups
 		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
+
+		// SHARD LEASE
+		// Use manager's leader election mechanism for maintaining the shard lease.
+		// With this, controllers will only run as long as manager holds the shard lease.
+		// After graceful termination, the shard lease will be released.
+		LeaderElection:                      true,
+		LeaderElectionResourceLockInterface: shardLease,
+		LeaderElectionReleaseOnCancel:       true,
+
+		// FILTERED WATCH CACHE
+		Cache: cache.Options{
+			// Configure cache to only watch objects that are assigned to this shard.
+			// This shard only watches sharded objects, so we can configure the label selector on the cache's global level.
+			// If your shard watches sharded objects as well as non-sharded objects, use cache.Options.ByObject to configure
+			// the label selector on object level.
+			DefaultLabelSelector: labels.SelectorFromSet(labels.Set{
+				shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring"): shardLease.Identity(),
+			}),
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -127,7 +160,7 @@ func main() {
 	if err = (&controller.WorkloadReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, shardLease.Identity()); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Workload")
 		os.Exit(1)
 	}
