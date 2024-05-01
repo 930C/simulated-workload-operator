@@ -49,6 +49,9 @@ type WorkloadReconciler struct {
 //+kubebuilder:rbac:groups=simulation.c930.net,resources=workloads/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=simulation.c930.net,resources=workloads/finalizers,verbs=update
 //+kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -89,8 +92,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	r.runWorkload(ctx, workload)
 
 	// Reconcile optional NGINX deployment
-	err := r.ReconcileNginxDeployment(ctx, workload)
-	if err != nil {
+	if err := r.ReconcileNginxDeployment(ctx, workload); err != nil {
 		logger.Error(err, "Failed to reconcile entire NGINX setup")
 		return ctrl.Result{}, err
 	}
@@ -110,6 +112,7 @@ func (r *WorkloadReconciler) runWorkload(ctx context.Context, workload *simulati
 	// Check if the workload has already been processed and if there have been no spec changes.
 	if workload.Status.Executed {
 		logger.Info("SKIPPING processing as workload is marked processed and no spec change")
+		return
 	}
 
 	// Depending on the Workloadtype, run the workload
@@ -128,6 +131,7 @@ func (r *WorkloadReconciler) runWorkload(ctx context.Context, workload *simulati
 		time.Sleep(sleepDuration)
 	default:
 		logger.Info("No workload simulation required", "Workload.Spec.SimulationType", workload.Spec.SimulationType)
+		return
 	}
 
 	logger.Info("Workload simulation completed", "Workload.Spec.SimulationType", workload.Spec.SimulationType)

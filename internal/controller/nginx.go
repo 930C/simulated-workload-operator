@@ -65,8 +65,7 @@ func (r *WorkloadReconciler) ReconcileNginxDeployment(ctx context.Context, workl
 		return err
 	}
 
-	// Update status to reflect successful reconciliation
-	return r.updateNginxStatus(ctx, workload)
+	return nil
 }
 
 func (r *WorkloadReconciler) cleanupNginxResources(ctx context.Context, workload *simulationv1alpha1.Workload) error {
@@ -284,7 +283,7 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 	logger := log.FromContext(ctx)
 	deploymentName := workload.Name + deploymentNameSuffix
 
-	logger.Info("Deploying Nginx", "Deployment.Namespace", workload.Namespace, "Deployment.Name", deploymentName)
+	logger.Info("Reconciling Nginx", "Deployment.Namespace", workload.Namespace, "Deployment.Name", deploymentName)
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deploymentName,
@@ -381,7 +380,7 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 
 	// Überprüfen und Setzen neuer Werte für Annotations und Replikas
 	updateNeeded := false
-	if updatedDeployment.Spec.Replicas != workload.Spec.Nginx.Replicas {
+	if *updatedDeployment.Spec.Replicas != *workload.Spec.Nginx.Replicas {
 		updatedDeployment.Spec.Replicas = workload.Spec.Nginx.Replicas
 		updateNeeded = true
 	}
@@ -404,6 +403,11 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 			return err
 		}
 	}
+
+	workload.Status.DeploymentStatus.Replicas = updatedDeployment.Status.Replicas
+	workload.Status.DeploymentStatus.UpToDateReplicas = updatedDeployment.Status.UpdatedReplicas
+	workload.Status.DeploymentStatus.AvailableReplicas = updatedDeployment.Status.AvailableReplicas
+	workload.Status.DeploymentStatus.ReadyReplicas = updatedDeployment.Status.ReadyReplicas
 
 	return nil
 }
@@ -450,35 +454,12 @@ func (r *WorkloadReconciler) reconcileService(ctx context.Context, workload *sim
 	return nil
 }
 
-func (r *WorkloadReconciler) updateNginxStatus(ctx context.Context, workload *simulationv1alpha1.Workload) error {
-	logger := log.FromContext(ctx)
-
-	deployment := &appsv1.Deployment{}
-	err := r.Get(ctx, types.NamespacedName{Name: workload.Name + "-nginx", Namespace: workload.Namespace}, deployment)
-	if err != nil {
-		logger.Error(err, "Failed to get Nginx deployment for status update")
-		return err
-	}
-
-	workload.Status.DeploymentStatus.Replicas = deployment.Status.Replicas
-	workload.Status.DeploymentStatus.UpToDateReplicas = deployment.Status.UpdatedReplicas
-	workload.Status.DeploymentStatus.AvailableReplicas = deployment.Status.AvailableReplicas
-	workload.Status.DeploymentStatus.ReadyReplicas = deployment.Status.ReadyReplicas
-
-	if err := r.Status().Update(ctx, workload); err != nil {
-		logger.Error(err, "Failed to update workload status")
-		return err
-	}
-
-	return nil
-}
-
 func (r *WorkloadReconciler) reconcileHTMLConfigMap(ctx context.Context, workload *simulationv1alpha1.Workload) error {
 	logger := log.FromContext(ctx)
 	configMapName := workload.Name + htmlConfigMapSuffix
 
 	// Calculate the hash of the ConfigMap data
-	hash, err := hashMapData(workload.Spec.Nginx.ConfigMapData)
+	hash, err := hashMapData(map[string]string{"index.html": workload.Spec.Nginx.HTML})
 	if err != nil {
 		logger.Error(err, "Failed to calculate hash of ConfigMap data")
 		return err
