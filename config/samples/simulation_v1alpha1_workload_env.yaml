@@ -1,0 +1,30 @@
+apiVersion: simulation.c930.net/v1alpha1
+kind: Workload
+metadata:
+  labels:
+    app.kubernetes.io/name: simulated-workload-operator
+  name: ${WORKLOAD_NAME}
+spec:
+  nginx:
+    replicas: 2
+    configMapData:
+      message: "Helloo, World!"
+    secretData:
+      username: admin
+      password: hallo
+    html: |
+      <html>
+        <body>
+          <h1>Pod Information</h1>
+          <p>Pod Name: ${POD_NAME}</p>
+          <p>Namespace: ${NAMESPACE}</p>
+          <p>Node Name: ${NODE_NAME}</p>
+
+          <h1>ConfigMap Data</h1>
+          <p>Message: ${CONFIG_MESSAGE}</p>
+
+          <h1>Secret Data</h1>
+          <p>Username: ${SECRET_USERNAME}</p>
+          <p>Password: ${SECRET_PASSWORD}</p>
+        </body>
+      </html>

@@ -98,7 +98,7 @@ func (r *WorkloadReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Update the status of the Workload CR to indicate that the reconciliation is successful.
-	if err := r.updateWorkloadStatusCondition(ctx, workload, reconcileStartTime); err != nil {
+	if err := r.updateWorkloadStatus(ctx, workload, reconcileStartTime); err != nil {
 		logger.Error(err, "Failed to update Workload status")
 		return ctrl.Result{}, err
 	}
@@ -153,8 +153,7 @@ func (r *WorkloadReconciler) handleInitialStatusCondition(ctx context.Context, w
 	return nil
 }
 
-func (r *WorkloadReconciler) updateWorkloadStatusCondition(ctx context.Context, workload *simulationv1alpha1.Workload, reconcileStartTime string) error {
-	// update the status of the Workload CR to indicate that the reconciliation is successful.
+func (r *WorkloadReconciler) updateWorkloadStatus(ctx context.Context, workload *simulationv1alpha1.Workload, reconcileStartTime string) error {
 	logger := log.FromContext(ctx)
 	logger.Info("Updating final Workload status")
 

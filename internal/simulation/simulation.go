@@ -65,11 +65,9 @@ func SimulateIO(ctx context.Context, duration int, sizeMB int) {
 
 	// Define the duration for the simulation
 	endTime := time.Now().Add(time.Duration(duration) * time.Second)
-	randomSource := rand2.New(rand2.NewSource(time.Now().UnixNano()))
 
 	for time.Now().Before(endTime) {
-		fileSize := randomSource.Intn(sizeMB) + 1 // Ensure non-zero file size
-		data := make([]byte, fileSize*1024*1024)
+		data := make([]byte, sizeMB*1024*1024)
 		_, err := rand.Read(data)
 		if err != nil {
 			logger.Error(err, "Failed to generate random data")
