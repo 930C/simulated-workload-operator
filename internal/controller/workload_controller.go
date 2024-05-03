@@ -179,7 +179,7 @@ func (r *WorkloadReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		WithEventFilter(predicate.Or(
 			predicate.GenerationChangedPredicate{},
 		)).
-		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: 3}).
 		Owns(&v1.Service{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&v1.ConfigMap{}).

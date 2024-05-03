@@ -404,11 +404,6 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 		}
 	}
 
-	workload.Status.DeploymentStatus.Replicas = updatedDeployment.Status.Replicas
-	workload.Status.DeploymentStatus.UpToDateReplicas = updatedDeployment.Status.UpdatedReplicas
-	workload.Status.DeploymentStatus.AvailableReplicas = updatedDeployment.Status.AvailableReplicas
-	workload.Status.DeploymentStatus.ReadyReplicas = updatedDeployment.Status.ReadyReplicas
-
 	return nil
 }
 
