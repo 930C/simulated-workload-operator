@@ -7,10 +7,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	simulationv1alpha1 "github.com/930C/simulated-workload-operator/api/v1alpha1"
+	shardingv1alpha1 "github.com/timebertt/kubernetes-controller-sharding/pkg/apis/sharding/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/json"
@@ -180,6 +182,9 @@ func (r *WorkloadReconciler) reconcileConfigMap(ctx context.Context, workload *s
 				UID:        workload.UID,
 				Controller: ptr.To(true),
 			}},
+			Labels: labels.Set{
+				shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring"): workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")],
+			},
 		},
 		Data: workload.Spec.Nginx.ConfigMapData,
 	}
@@ -215,6 +220,16 @@ func (r *WorkloadReconciler) reconcileConfigMap(ctx context.Context, workload *s
 		return r.updateResourceHashStatus(ctx, workload, hash, "configmap")
 	}
 
+	if foundCM.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] != workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] {
+		// Update the ConfigMap labels
+		foundCM.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] = workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")]
+		err = r.Update(ctx, foundCM)
+		if err != nil {
+			logger.Error(err, "Failed to update ConfigMap labels")
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -243,6 +258,9 @@ func (r *WorkloadReconciler) reconcileSecret(ctx context.Context, workload *simu
 				UID:        workload.UID,
 				Controller: ptr.To(true),
 			}},
+			Labels: labels.Set{
+				shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring"): workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")],
+			},
 		},
 		Data: encodeSecretData(workload.Spec.Nginx.SecretData),
 		Type: corev1.SecretTypeOpaque,
@@ -276,6 +294,17 @@ func (r *WorkloadReconciler) reconcileSecret(ctx context.Context, workload *simu
 		return r.updateResourceHashStatus(ctx, workload, hash, "secret")
 	}
 
+	if foundSecret.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] != workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] {
+		logger.Info("Updating Secret labels", "Secret.Namespace", foundSecret.Namespace, "Secret.Name", foundSecret.Name)
+		foundSecret.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] = workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")]
+		err = r.Update(ctx, foundSecret)
+		if err != nil {
+			logger.Error(err, "Failed to update Secret labels")
+			return err
+		}
+		return r.updateResourceHashStatus(ctx, workload, hash, "secret")
+	}
+
 	return nil
 }
 
@@ -295,6 +324,9 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 				UID:        workload.UID,
 				Controller: ptr.To(true),
 			}},
+			Labels: labels.Set{
+				shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring"): workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")],
+			},
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: workload.Spec.Nginx.Replicas,
@@ -395,6 +427,12 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 		updateNeeded = true
 	}
 
+	// Update when clusterring annotation changes
+	if updatedDeployment.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] != workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] {
+		updatedDeployment.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] = workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")]
+		updateNeeded = true
+	}
+
 	// Nur aktualisieren, wenn Änderungen erforderlich sind
 	if updateNeeded {
 		err = r.Update(ctx, updatedDeployment)
@@ -403,11 +441,6 @@ func (r *WorkloadReconciler) reconcileNginx(ctx context.Context, workload *simul
 			return err
 		}
 	}
-
-	workload.Status.DeploymentStatus.Replicas = updatedDeployment.Status.Replicas
-	workload.Status.DeploymentStatus.UpToDateReplicas = updatedDeployment.Status.UpdatedReplicas
-	workload.Status.DeploymentStatus.AvailableReplicas = updatedDeployment.Status.AvailableReplicas
-	workload.Status.DeploymentStatus.ReadyReplicas = updatedDeployment.Status.ReadyReplicas
 
 	return nil
 }
@@ -426,6 +459,9 @@ func (r *WorkloadReconciler) reconcileService(ctx context.Context, workload *sim
 				UID:        workload.UID,
 				Controller: ptr.To(true),
 			}},
+			Labels: labels.Set{
+				shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring"): workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")],
+			},
 		},
 		Spec: corev1.ServiceSpec{
 			Selector: map[string]string{
@@ -449,6 +485,14 @@ func (r *WorkloadReconciler) reconcileService(ctx context.Context, workload *sim
 		return r.Create(ctx, service)
 	} else if err != nil {
 		return err
+	}
+
+	if foundService.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] != workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] {
+		foundService.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] = workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")]
+		err = r.Update(ctx, foundService)
+		if err != nil {
+			return fmt.Errorf("failed to update Service: %v", err)
+		}
 	}
 
 	return nil
@@ -480,6 +524,9 @@ func (r *WorkloadReconciler) reconcileHTMLConfigMap(ctx context.Context, workloa
 				UID:        workload.UID,
 				Controller: ptr.To(true),
 			}},
+			Labels: labels.Set{
+				shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring"): workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")],
+			},
 		},
 		Data: map[string]string{"index.html": workload.Spec.Nginx.HTML},
 	}
@@ -510,6 +557,16 @@ func (r *WorkloadReconciler) reconcileHTMLConfigMap(ctx context.Context, workloa
 			return err
 		}
 		return r.updateResourceHashStatus(ctx, workload, hash, "html")
+	}
+
+	if foundCM.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] != workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] {
+		// Update the ConfigMap labels
+		foundCM.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")] = workload.Labels[shardingv1alpha1.LabelShard(shardingv1alpha1.KindClusterRing, "", "swo-clusterring")]
+		err = r.Update(ctx, foundCM)
+		if err != nil {
+			logger.Error(err, "Failed to update ConfigMap labels")
+			return err
+		}
 	}
 
 	return nil
